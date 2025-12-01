@@ -10,8 +10,6 @@
 # Note: Security is disabled for local development only.
 # Do NOT use these settings in production.
 
-version: '3.8'
-
 services:
   # OpenSearch - Search Engine
   opensearch:
@@ -24,8 +22,6 @@ services:
       - bootstrap.memory_lock=true
       - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
       # Disable security for local development
-      - plugins.security.disabled=true
-      - DISABLE_INSTALL_DEMO_CONFIG=true
       - DISABLE_SECURITY_PLUGIN=true
     ulimits:
       memlock:
