@@ -21,6 +21,31 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
+# Fields that require .keyword suffix for exact matching in filters
+# These are text fields in OpenSearch that have keyword sub-fields
+TEXT_FIELDS_WITH_KEYWORD = frozenset([
+    "title", "organisation", "location", "profession", "salary", "closingDate",
+    "contactName"
+])
+
+
+def get_filter_field_name(field: str) -> str:
+    """
+    Get the correct field name for filtering.
+    
+    Text fields need .keyword suffix for exact matching,
+    while keyword fields can be used directly.
+    
+    Args:
+        field: The field name from the filter
+        
+    Returns:
+        The field name to use in the OpenSearch query
+    """
+    if field in TEXT_FIELDS_WITH_KEYWORD:
+        return f"{field}.keyword"
+    return field
+
 
 def build_search_query(
     q: Optional[str] = None,
@@ -61,18 +86,19 @@ def build_search_query(
     # Apply filters
     if filters:
         for field, value in filters.items():
+            filter_field = get_filter_field_name(field)
             if isinstance(value, list):
                 # Multiple values: use terms query
                 filter_clauses.append({
                     "terms": {
-                        f"{field}.keyword" if field in ["title", "organisation", "location", "profession", "salary", "closingDate"] else field: value
+                        filter_field: value
                     }
                 })
             else:
                 # Single value: use term query
                 filter_clauses.append({
                     "term": {
-                        f"{field}.keyword" if field in ["title", "organisation", "location", "profession", "salary", "closingDate"] else field: value
+                        filter_field: value
                     }
                 })
     

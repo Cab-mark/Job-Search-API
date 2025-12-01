@@ -140,7 +140,7 @@ class TestJobModels:
         request = JobCreateRequest(**create_data)
         assert request.title == "New Position"
         # Ensure id is not a field on JobCreateRequest
-        assert not hasattr(request, 'id') or request.model_fields.get('id') is None
+        assert 'id' not in request.model_fields
 
 
 class TestSearchEndpoints:

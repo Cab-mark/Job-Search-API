@@ -109,7 +109,7 @@ class JobCreateRequest(BaseModel):
     salary: Optional[str] = Field(None, description="Salary information")
     closingDate: Optional[str] = Field(None, description="Application closing date")
     jobNumbers: Optional[int] = Field(None, description="Number of positions available")
-    contacts: bool = Field(default=False, description="Whether contact details are available")
+    contacts: bool = Field(..., description="Whether contact details are available")
     contactName: Optional[str] = Field(None, description="Contact person name")
     contactEmail: Optional[str] = Field(None, description="Contact email address")
     contactPhone: Optional[str] = Field(None, description="Contact phone number")
