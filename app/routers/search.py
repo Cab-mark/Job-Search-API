@@ -39,6 +39,60 @@ VALID_WORKING_PATTERNS = {wp.value for wp in WorkingPattern}
 VALID_WORK_LOCATIONS = {wl.value for wl in WorkLocation}
 
 
+def parse_location_from_source(location_data: Any) -> List[FixedLocation]:
+    """
+    Parse location data from OpenSearch source into FixedLocation list.
+    
+    Handles various formats:
+    - String: converts to simple FixedLocation
+    - List of dicts: parses as FixedLocation objects
+    - List of strings: converts each to FixedLocation
+    - None/empty: returns default "Unknown" location
+    
+    Args:
+        location_data: Location data from OpenSearch document
+        
+    Returns:
+        List of FixedLocation objects
+    """
+    if isinstance(location_data, str):
+        # Legacy format: convert string to FixedLocation
+        return [FixedLocation(
+            town_name=location_data,
+            region="Unknown",
+            latitude=0.0,
+            longitude=0.0
+        )]
+    elif isinstance(location_data, list) and location_data:
+        # Already in array format
+        try:
+            return [
+                FixedLocation(**loc) if isinstance(loc, dict) 
+                else FixedLocation(
+                    town_name=str(loc),
+                    region="Unknown",
+                    latitude=0.0,
+                    longitude=0.0
+                )
+                for loc in location_data
+            ]
+        except Exception as e:
+            logger.warning(f"Failed to parse location data: {e}, using fallback")
+            return [FixedLocation(
+                town_name=str(location_data[0]) if location_data else "Unknown",
+                region="Unknown",
+                latitude=0.0,
+                longitude=0.0
+            )]
+    else:
+        return [FixedLocation(
+            town_name="Unknown",
+            region="Unknown",
+            latitude=0.0,
+            longitude=0.0
+        )]
+
+
 def build_search_query(
     q: Optional[str] = None,
     organisation: Optional[str] = None,
@@ -187,40 +241,9 @@ def opensearch_hit_to_job_result_item(hit: Dict[str, Any]) -> JobResultItem:
     title = source.get("title", "")
     organisation = source.get("organisation", "")
     
-    # Handle location - try to parse as FixedLocation, fallback to simple structure
+    # Handle location - parse from various formats
     location_data = source.get("location", [])
-    if isinstance(location_data, str):
-        # Legacy format: convert string to FixedLocation
-        location = [FixedLocation(
-            town_name=location_data,
-            region="Unknown",
-            latitude=0.0,
-            longitude=0.0
-        )]
-    elif isinstance(location_data, list) and location_data:
-        # Already in array format
-        try:
-            location = [FixedLocation(**loc) if isinstance(loc, dict) else FixedLocation(
-                town_name=str(loc),
-                region="Unknown",
-                latitude=0.0,
-                longitude=0.0
-            ) for loc in location_data]
-        except Exception as e:
-            logger.warning(f"Failed to parse location data: {e}, using fallback")
-            location = [FixedLocation(
-                town_name=str(location_data[0]) if location_data else "Unknown",
-                region="Unknown",
-                latitude=0.0,
-                longitude=0.0
-            )]
-    else:
-        location = [FixedLocation(
-            town_name="Unknown",
-            region="Unknown",
-            latitude=0.0,
-            longitude=0.0
-        )]
+    location = parse_location_from_source(location_data)
     
     # Handle working pattern - convert to enum
     working_pattern_data = source.get("workingPattern", [])
@@ -281,14 +304,16 @@ def opensearch_hit_to_job_result_item(hit: Dict[str, Any]) -> JobResultItem:
     profession_str = source.get("profession", "")
     if not profession_str:
         # Missing required field - skip this job
-        logger.warning(f"Job {job_id} missing required profession field, skipping")
-        raise ValueError("Missing required profession field")
+        error_msg = f"Job {job_id} (title: '{title}', org: '{organisation}') missing required profession field"
+        logger.warning(f"{error_msg}, skipping")
+        raise ValueError(error_msg)
     try:
         profession = Profession(profession_str)
     except ValueError:
         # Invalid profession value - skip this job as profession is required
-        logger.warning(f"Job {job_id} has invalid profession '{profession_str}', skipping")
-        raise ValueError(f"Invalid profession: {profession_str}")
+        error_msg = f"Job {job_id} (title: '{title}', org: '{organisation}') has invalid profession '{profession_str}'"
+        logger.warning(f"{error_msg}, skipping")
+        raise ValueError(error_msg)
     
     # Handle approach - convert to enum
     approach_str = source.get("approach", "Internal")
