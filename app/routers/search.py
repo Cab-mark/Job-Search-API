@@ -1,19 +1,31 @@
 """
 Search Router for Job Search API
 
-Contains all endpoints related to job search functionality:
+Contains endpoints related to job search functionality:
 - GET /jobs - Search for jobs with optional filters and pagination
-- GET /jobs/{id} - Get a specific job by ID
-- POST /jobs - Create a new job posting (local development only)
+
+This module uses Pydantic models from the jobs-data-contracts package.
 """
 
 import logging
 import math
-import uuid
+import json
+from datetime import date
 from typing import Optional, List, Dict, Any, Union
-from fastapi import APIRouter, HTTPException, Query, Path
+from fastapi import APIRouter, HTTPException, Query
 
-from app.models import Job, JobSearchResponse, JobCreateRequest
+from jobs_data_contracts.search import (
+    JobSearchResponse,
+    JobResultItem,
+    Profession,
+    Grade,
+    Assignments,
+    WorkingPattern,
+    WorkLocation,
+    Salary,
+    FixedLocation,
+    Approach,
+)
 from app.config import get_settings
 from app.opensearch_client import get_opensearch_client
 
@@ -21,42 +33,90 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
-# Fields that require .keyword suffix for exact matching in filters
-# These are text fields in OpenSearch that have keyword sub-fields
-TEXT_FIELDS_WITH_KEYWORD = frozenset([
-    "title", "organisation", "location", "profession", "salary", "closingDate",
-    "contactName"
-])
+# Constants for data mapping and validation
+DEFAULT_CLOSING_DATE = date(2099, 12, 31)  # Far-future date for jobs without closing date
+VALID_WORKING_PATTERNS = {wp.value for wp in WorkingPattern}
+VALID_WORK_LOCATIONS = {wl.value for wl in WorkLocation}
 
 
-def get_filter_field_name(field: str) -> str:
+def parse_location_from_source(location_data: Any) -> List[FixedLocation]:
     """
-    Get the correct field name for filtering.
+    Parse location data from OpenSearch source into FixedLocation list.
     
-    Text fields need .keyword suffix for exact matching,
-    while keyword fields can be used directly.
+    Handles various formats:
+    - String: converts to simple FixedLocation
+    - List of dicts: parses as FixedLocation objects
+    - List of strings: converts each to FixedLocation
+    - None/empty: returns default "Unknown" location
     
     Args:
-        field: The field name from the filter
+        location_data: Location data from OpenSearch document
         
     Returns:
-        The field name to use in the OpenSearch query
+        List of FixedLocation objects
     """
-    if field in TEXT_FIELDS_WITH_KEYWORD:
-        return f"{field}.keyword"
-    return field
+    if isinstance(location_data, str):
+        # Legacy format: convert string to FixedLocation
+        return [FixedLocation(
+            town_name=location_data,
+            region="Unknown",
+            latitude=0.0,
+            longitude=0.0
+        )]
+    elif isinstance(location_data, list) and location_data:
+        # Already in array format
+        try:
+            return [
+                FixedLocation(**loc) if isinstance(loc, dict) 
+                else FixedLocation(
+                    town_name=str(loc),
+                    region="Unknown",
+                    latitude=0.0,
+                    longitude=0.0
+                )
+                for loc in location_data
+            ]
+        except Exception as e:
+            logger.warning(f"Failed to parse location data: {e}, using fallback")
+            return [FixedLocation(
+                town_name=str(location_data[0]) if location_data else "Unknown",
+                region="Unknown",
+                latitude=0.0,
+                longitude=0.0
+            )]
+    else:
+        return [FixedLocation(
+            town_name="Unknown",
+            region="Unknown",
+            latitude=0.0,
+            longitude=0.0
+        )]
 
 
 def build_search_query(
     q: Optional[str] = None,
-    filters: Optional[Dict[str, Union[str, List[str]]]] = None
+    organisation: Optional[str] = None,
+    professions: Optional[List[str]] = None,
+    grades: Optional[List[str]] = None,
+    assignments: Optional[List[str]] = None,
+    working_patterns: Optional[List[str]] = None,
+    work_locations: Optional[List[str]] = None,
+    salary_min: Optional[float] = None,
+    salary_max: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Build an OpenSearch query from search parameters.
     
     Args:
         q: Search query string for full-text search
-        filters: Dictionary of field filters
+        organisation: Organisation filter
+        professions: List of professions to filter by
+        grades: List of grades to filter by
+        assignments: List of assignment types to filter by
+        working_patterns: List of working patterns to filter by
+        work_locations: List of work locations to filter by
+        salary_min: Minimum salary filter
+        salary_max: Maximum salary filter
         
     Returns:
         OpenSearch query body
@@ -83,24 +143,62 @@ def build_search_query(
             }
         })
     
-    # Apply filters
-    if filters:
-        for field, value in filters.items():
-            filter_field = get_filter_field_name(field)
-            if isinstance(value, list):
-                # Multiple values: use terms query
-                filter_clauses.append({
-                    "terms": {
-                        filter_field: value
-                    }
-                })
-            else:
-                # Single value: use term query
-                filter_clauses.append({
-                    "term": {
-                        filter_field: value
-                    }
-                })
+    # Organisation filter (exact match on keyword field)
+    if organisation:
+        filter_clauses.append({
+            "term": {
+                "organisation.keyword": organisation
+            }
+        })
+    
+    # Profession filter (multi-select)
+    if professions:
+        filter_clauses.append({
+            "terms": {
+                "profession.keyword": professions
+            }
+        })
+    
+    # Grade filter (multi-select)
+    if grades:
+        filter_clauses.append({
+            "terms": {
+                "grade": grades
+            }
+        })
+    
+    # Assignment type filter (multi-select)
+    if assignments:
+        filter_clauses.append({
+            "terms": {
+                "assignmentType": assignments
+            }
+        })
+    
+    # Working pattern filter (multi-select)
+    if working_patterns:
+        filter_clauses.append({
+            "terms": {
+                "workingPattern": working_patterns
+            }
+        })
+    
+    # Work location filter (multi-select)
+    if work_locations:
+        filter_clauses.append({
+            "terms": {
+                "workLocation": work_locations
+            }
+        })
+    
+    # Salary range filter
+    if salary_min is not None or salary_max is not None:
+        range_filter = {"salary.minimum": {}}
+        if salary_min is not None:
+            range_filter["salary.minimum"]["gte"] = salary_min
+        if salary_max is not None:
+            range_filter["salary.minimum"]["lte"] = salary_max
+        filter_clauses.append({"range": range_filter})
     
     # Build the query
     if must_clauses or filter_clauses:
@@ -118,16 +216,142 @@ def build_search_query(
     return query
 
 
+def opensearch_hit_to_job_result_item(hit: Dict[str, Any]) -> JobResultItem:
+    """
+    Convert an OpenSearch hit to a JobResultItem.
+    
+    This function handles the mapping between the OpenSearch document structure
+    and the JobResultItem Pydantic model from jobs-data-contracts.
+    
+    Note: The current OpenSearch data may have a different structure than expected.
+    This function provides a basic mapping that may need adjustment based on
+    actual data in the index.
+    
+    Args:
+        hit: OpenSearch hit dictionary
+        
+    Returns:
+        JobResultItem: Mapped job result item
+    """
+    source = hit.get("_source", {})
+    
+    # Extract basic fields
+    job_id = source.get("id", "")
+    external_id = source.get("externalId", source.get("id", ""))
+    title = source.get("title", "")
+    organisation = source.get("organisation", "")
+    
+    # Handle location - parse from various formats
+    location_data = source.get("location", [])
+    location = parse_location_from_source(location_data)
+    
+    # Handle working pattern - convert to enum
+    working_pattern_data = source.get("workingPattern", [])
+    if isinstance(working_pattern_data, str):
+        working_pattern_data = [working_pattern_data]
+    working_pattern = [
+        WorkingPattern(wp) if wp in VALID_WORKING_PATTERNS else WorkingPattern.full_time
+        for wp in (working_pattern_data if working_pattern_data else ["Full-time"])
+    ]
+    
+    # Handle assignment type - convert to enum
+    assignment_type_str = source.get("assignmentType", "Permanent")
+    try:
+        assignment_type = Assignments(assignment_type_str)
+    except ValueError:
+        assignment_type = Assignments.permanent
+    
+    # Handle salary - convert to structured format
+    salary_data = source.get("salary")
+    if isinstance(salary_data, dict) and "minimum" in salary_data:
+        salary = Salary(**salary_data)
+    elif isinstance(salary_data, str):
+        # Parse salary string (e.g., "£45,000")
+        try:
+            salary_value = float(salary_data.replace("£", "").replace(",", ""))
+            salary = Salary(minimum=salary_value, currency="GBP", currency_symbol="£")
+        except (ValueError, AttributeError):
+            salary = Salary(minimum=0.0, currency="GBP", currency_symbol="£")
+    else:
+        salary = Salary(minimum=0.0, currency="GBP", currency_symbol="£")
+    
+    # Handle work location - convert to enum
+    work_location_data = source.get("workLocation", [])
+    if isinstance(work_location_data, str):
+        work_location_data = [work_location_data]
+    work_location = [
+        WorkLocation(wl) if wl in VALID_WORK_LOCATIONS else WorkLocation.office_based
+        for wl in (work_location_data if work_location_data else ["Office based"])
+    ]
+    
+    # Handle grade - can be enum or string
+    grade_str = source.get("grade", "")
+    try:
+        grade = Grade(grade_str)
+    except ValueError:
+        grade = grade_str or "Unknown"
+    
+    # Handle closing date - convert to date
+    closing_date_str = source.get("closingDate", "")
+    try:
+        closing_date = date.fromisoformat(closing_date_str)
+    except (ValueError, TypeError):
+        # Fallback: use far future date for jobs without valid closing date
+        closing_date = DEFAULT_CLOSING_DATE
+    
+    # Handle profession - convert to enum
+    # Note: Profession is required per the schema
+    profession_str = source.get("profession", "")
+    if not profession_str:
+        # Missing required field - skip this job
+        error_msg = f"Job {job_id} (title: '{title}', org: '{organisation}') missing required profession field"
+        logger.warning(f"{error_msg}, skipping")
+        raise ValueError(error_msg)
+    try:
+        profession = Profession(profession_str)
+    except ValueError:
+        # Invalid profession value - skip this job as profession is required
+        error_msg = f"Job {job_id} (title: '{title}', org: '{organisation}') has invalid profession '{profession_str}'"
+        logger.warning(f"{error_msg}, skipping")
+        raise ValueError(error_msg)
+    
+    # Handle approach - convert to enum
+    approach_str = source.get("approach", "Internal")
+    try:
+        approach = Approach(approach_str)
+    except ValueError:
+        approach = Approach.internal
+    
+    return JobResultItem(
+        id=job_id,
+        external_id=external_id,
+        title=title,
+        organisation=organisation,
+        location=location,
+        working_pattern=working_pattern,
+        assignment_type=assignment_type,
+        salary=salary,
+        work_location=work_location,
+        grade=grade,
+        closing_date=closing_date,
+        profession=profession,
+        approach=approach,
+    )
+
+
 @router.get("", response_model=JobSearchResponse)
 async def search_jobs(
     q: Optional[str] = Query(None, description="Search query for full-text search"),
     organisation: Optional[str] = Query(None, description="Filter by organisation"),
-    location: Optional[str] = Query(None, description="Filter by location"),
-    grade: Optional[str] = Query(None, description="Filter by grade"),
-    assignmentType: Optional[str] = Query(None, description="Filter by assignment type"),
-    profession: Optional[str] = Query(None, description="Filter by profession"),
+    professions: Optional[List[str]] = Query(None, description="Filter by professions (multi-select)"),
+    grades: Optional[List[str]] = Query(None, description="Filter by grades (multi-select)"),
+    assignments: Optional[List[str]] = Query(None, description="Filter by assignment types (multi-select)"),
+    working_patterns: Optional[List[str]] = Query(None, alias="workingPatterns", description="Filter by working patterns (multi-select)"),
+    work_locations: Optional[List[str]] = Query(None, alias="workLocations", description="Filter by work locations (multi-select)"),
+    salary_min: Optional[float] = Query(None, alias="salaryMin", description="Minimum salary filter", ge=0),
+    salary_max: Optional[float] = Query(None, alias="salaryMax", description="Maximum salary filter", ge=0),
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-    pageSize: int = Query(None, ge=1, le=100, description="Number of results per page")
+    page_size: int = Query(None, alias="pageSize", ge=1, le=100, description="Number of results per page")
 ) -> JobSearchResponse:
     """
     Search for jobs with optional query, filters, and pagination.
@@ -136,6 +360,8 @@ async def search_jobs(
     location, summary, profession, and grade fields.
     
     Filters can be applied to narrow down results by specific field values.
+    Array filters (professions, grades, assignments, working patterns, work locations)
+    support multiple values.
     
     Returns:
         JobSearchResponse containing paginated results and metadata
@@ -144,27 +370,24 @@ async def search_jobs(
     client = get_opensearch_client()
     
     # Use default page size if not specified
-    if pageSize is None:
-        pageSize = settings.default_page_size
-    
-    # Build filters from query parameters
-    filters: Dict[str, str] = {}
-    if organisation:
-        filters["organisation"] = organisation
-    if location:
-        filters["location"] = location
-    if grade:
-        filters["grade"] = grade
-    if assignmentType:
-        filters["assignmentType"] = assignmentType
-    if profession:
-        filters["profession"] = profession
+    if page_size is None:
+        page_size = settings.default_page_size
     
     # Build the search query
-    query = build_search_query(q=q, filters=filters if filters else None)
+    query = build_search_query(
+        q=q,
+        organisation=organisation,
+        professions=professions,
+        grades=grades,
+        assignments=assignments,
+        working_patterns=working_patterns,
+        work_locations=work_locations,
+        salary_min=salary_min,
+        salary_max=salary_max,
+    )
     
     # Calculate pagination
-    from_index = (page - 1) * pageSize
+    from_index = (page - 1) * page_size
     
     # Execute search
     try:
@@ -173,7 +396,7 @@ async def search_jobs(
             body={
                 "query": query,
                 "from": from_index,
-                "size": pageSize,
+                "size": page_size,
                 "sort": [
                     {"_score": {"order": "desc"}},
                     {"id": {"order": "asc"}}
@@ -188,110 +411,47 @@ async def search_jobs(
         
         results = []
         for hit in hits.get("hits", []):
-            source = hit.get("_source", {})
-            results.append(Job(**source))
+            try:
+                results.append(opensearch_hit_to_job_result_item(hit))
+            except Exception as e:
+                logger.error(f"Failed to map job result: {e}, hit: {hit.get('_source', {}).get('id', 'unknown')}")
+                # Skip jobs that fail to map
+                continue
         
         # Calculate total pages
-        total_pages = math.ceil(total / pageSize) if total > 0 else 0
+        total_pages = math.ceil(total / page_size) if total > 0 else 0
         
-        return JobSearchResponse(
-            results=results,
-            total=total,
-            page=page,
-            pageSize=pageSize,
-            totalPages=total_pages,
-            query=q,
-            appliedFilters=filters if filters else None
-        )
+        # Build applied filters string
+        applied_filters_parts = []
+        if organisation:
+            applied_filters_parts.append(f"organisation={organisation}")
+        if professions:
+            applied_filters_parts.append(f"professions={','.join(professions)}")
+        if grades:
+            applied_filters_parts.append(f"grades={','.join(grades)}")
+        if assignments:
+            applied_filters_parts.append(f"assignments={','.join(assignments)}")
+        if working_patterns:
+            applied_filters_parts.append(f"workingPatterns={','.join(working_patterns)}")
+        if work_locations:
+            applied_filters_parts.append(f"workLocations={','.join(work_locations)}")
+        if salary_min is not None:
+            applied_filters_parts.append(f"salaryMin={salary_min}")
+        if salary_max is not None:
+            applied_filters_parts.append(f"salaryMax={salary_max}")
+        
+        applied_filters = "; ".join(applied_filters_parts) if applied_filters_parts else ""
+        
+        return JobSearchResponse(**{
+            "results": results,
+            "total": total,
+            "page": page,
+            "pageSize": page_size,
+            "totalPages": total_pages,
+            "query": q or "",
+            "appliedFilters": applied_filters,
+        })
         
     except Exception as e:
         logger.error(f"Search failed: {e}")
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
-
-
-@router.get("/{job_id}", response_model=Job)
-async def get_job(
-    job_id: str = Path(..., description="The unique job identifier")
-) -> Job:
-    """
-    Get a specific job by its ID.
-    
-    Args:
-        job_id: The unique identifier of the job
-        
-    Returns:
-        Job: The job document
-        
-    Raises:
-        HTTPException: 404 if job not found
-    """
-    settings = get_settings()
-    client = get_opensearch_client()
-    
-    try:
-        # Search for the job by ID
-        response = client.search(
-            index=settings.opensearch_index,
-            body={
-                "query": {
-                    "term": {
-                        "id": job_id
-                    }
-                }
-            }
-        )
-        
-        hits = response.get("hits", {}).get("hits", [])
-        
-        if not hits:
-            raise HTTPException(status_code=404, detail=f"Job with id '{job_id}' not found")
-        
-        source = hits[0].get("_source", {})
-        return Job(**source)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get job {job_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve job: {str(e)}")
-
-
-@router.post("", response_model=Job, status_code=201)
-async def create_job(job: JobCreateRequest) -> Job:
-    """
-    Create a new job posting.
-    
-    This endpoint is intended for local development and testing purposes.
-    In production, jobs would typically be indexed through a separate data pipeline.
-    
-    Args:
-        job: Job data to create
-        
-    Returns:
-        Job: The created job with generated ID
-    """
-    settings = get_settings()
-    client = get_opensearch_client()
-    
-    # Generate a unique ID
-    job_id = str(uuid.uuid4())
-    
-    # Create the job document
-    job_data = job.model_dump()
-    job_data["id"] = job_id
-    
-    try:
-        # Index the document
-        client.index(
-            index=settings.opensearch_index,
-            body=job_data,
-            id=job_id,
-            refresh=True  # Refresh immediately for local dev
-        )
-        
-        logger.info(f"Created job with id: {job_id}")
-        return Job(**job_data)
-        
-    except Exception as e:
-        logger.error(f"Failed to create job: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create job: {str(e)}")

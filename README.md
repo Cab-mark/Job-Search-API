@@ -7,42 +7,18 @@ A FastAPI-based REST API for searching job listings, designed to work with OpenS
 This API acts as an interface between the UI and the search engine (OpenSearch). It provides endpoints for:
 
 - Searching jobs with full-text search and filters
-- Retrieving individual job details by ID
-- Creating new job postings (for development/testing)
+- Health check for monitoring
 
-## TypeScript Interface Alignment
+**Note:** This API uses Pydantic models from the [jobs-data-contracts](https://pypi.org/project/jobs-data-contracts/) PyPI package to ensure schema consistency across services.
 
-The Pydantic models in this API are designed to match exactly the TypeScript `Job` interface from the Next.js frontend:
+## Data Contracts
 
-```typescript
-// From nextjs_govuk_experiment/app/lib/mockJobs.ts
-export interface Job {
-  id: string;
-  title: string;
-  description: string;
-  organisation: string;
-  location: string;
-  grade: string;
-  assignmentType: string;
-  personalSpec: string;
-  nationalityRequirement?: string;
-  summary?: string;
-  applyUrl?: string;
-  benefits?: string;
-  profession?: string;
-  applyDetail?: string;
-  salary?: string;
-  closingDate?: string;
-  jobNumbers?: number;
-  contacts: boolean;
-  contactName?: string;
-  contactEmail?: string;
-  contactPhone?: string;
-  recruitmentEmail: string;
-}
-```
+The API uses standardized Pydantic models from the `jobs-data-contracts` package:
+- **JobSearchRequest**: Query parameters for job search (filters, pagination, sorting)
+- **JobSearchResponse**: Paginated search results with metadata
+- **JobResultItem**: Individual job details in search results
 
-All API responses serialize exactly to this interface shape, ensuring seamless integration.
+This ensures schema alignment with other services in the jobs platform ecosystem.
 
 ## Project Structure
 
@@ -129,26 +105,9 @@ Job-Search-API/
 
 ## Loading Test Data
 
-You can load test data using the POST /jobs endpoint:
+**Note:** Job creation is now handled by a separate indexer service. This API is read-only for job search.
 
-```bash
-# Create a sample job
-curl -X POST http://localhost:8000/jobs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Policy Advisor",
-    "description": "This is a fantastic job for a policy professional...",
-    "organisation": "Ministry of Defence",
-    "location": "3 Glass Wharf, Bristol, BS2 OEL",
-    "grade": "Grade 7",
-    "assignmentType": "Fixed Term Appointment (FTA)",
-    "personalSpec": "Some personal specification text",
-    "contacts": false,
-    "recruitmentEmail": "recruitment@civilservice.gov.uk",
-    "salary": "£45,000",
-    "closingDate": "20 December 2025"
-  }'
-```
+To manually index test data, use the OpenSearch API directly or the indexer service.
 
 ## API Endpoints
 
@@ -177,15 +136,34 @@ curl "http://localhost:8000/jobs"
 # Search with query
 curl "http://localhost:8000/jobs?q=policy"
 
-# Search with filters
-curl "http://localhost:8000/jobs?grade=Grade%207&organisation=Ministry%20of%20Defence"
+# Search with filters (single values)
+curl "http://localhost:8000/jobs?organisation=Ministry%20of%20Defence"
+
+# Search with array filters (multi-select)
+curl "http://localhost:8000/jobs?grades=Grade%207&grades=Grade%206&professions=Digital%20and%20Data"
+
+# Search with salary range
+curl "http://localhost:8000/jobs?salaryMin=30000&salaryMax=50000"
 
 # Search with pagination
 curl "http://localhost:8000/jobs?page=1&pageSize=20"
 
 # Combined search
-curl "http://localhost:8000/jobs?q=developer&grade=Grade%207&page=1&pageSize=10"
+curl "http://localhost:8000/jobs?q=developer&grades=Grade%207&page=1&pageSize=10"
 ```
+
+**Query Parameters:**
+- `q` - Full-text search query
+- `page` - Page number (1-indexed, default: 1)
+- `pageSize` - Results per page (default: 10, max: 100)
+- `organisation` - Filter by organisation name
+- `professions` - Filter by professions (can specify multiple)
+- `grades` - Filter by grades (can specify multiple)
+- `assignments` - Filter by assignment types (can specify multiple)
+- `workingPatterns` - Filter by working patterns (can specify multiple: "Full-time", "Part-time")
+- `workLocations` - Filter by work locations (can specify multiple: "Home based", "Office based")
+- `salaryMin` - Minimum salary filter (numeric)
+- `salaryMax` - Maximum salary filter (numeric)
 
 Response:
 ```json
@@ -193,55 +171,38 @@ Response:
   "results": [
     {
       "id": "1567",
+      "externalId": "ext-1567",
       "title": "Policy Advisor",
-      "description": "This is a fantastic job...",
       "organisation": "Ministry of Defence",
-      "location": "3 Glass Wharf, Bristol, BS2 OEL",
-      "grade": "Grade 7",
+      "location": [
+        {
+          "townName": "Bristol",
+          "region": "South West",
+          "latitude": 51.4545,
+          "longitude": -2.5879
+        }
+      ],
+      "workingPattern": ["Full-time"],
       "assignmentType": "Fixed Term Appointment (FTA)",
-      "personalSpec": "Some personal specification text",
-      "contacts": false,
-      "recruitmentEmail": "recruitment@civilservice.gov.uk",
-      "salary": "£45,000",
-      "closingDate": "20 December 2025"
+      "salary": {
+        "minimum": 45000,
+        "currency": "GBP",
+        "currencySymbol": "£"
+      },
+      "workLocation": ["Office based"],
+      "grade": "Grade 7",
+      "closingDate": "2025-12-20",
+      "profession": "Policy",
+      "approach": "Internal"
     }
   ],
   "total": 1,
   "page": 1,
   "pageSize": 10,
   "totalPages": 1,
-  "query": null,
-  "appliedFilters": null
+  "query": "",
+  "appliedFilters": ""
 }
-```
-
-### Get Job by ID
-
-```bash
-curl http://localhost:8000/jobs/1567
-```
-
-### Create Job
-
-```bash
-curl -X POST http://localhost:8000/jobs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Senior Developer",
-    "description": "Join our team...",
-    "organisation": "HMRC",
-    "location": "Newcastle upon Tyne",
-    "grade": "Grade 6",
-    "assignmentType": "Permanent",
-    "personalSpec": "Required experience...",
-    "contacts": true,
-    "contactName": "Jane Doe",
-    "contactEmail": "jane.doe@hmrc.gov.uk",
-    "recruitmentEmail": "recruitment@hmrc.gov.uk",
-    "salary": "£55,000 - £65,000",
-    "closingDate": "15 January 2026",
-    "jobNumbers": 3
-  }'
 ```
 
 ## Running Tests
