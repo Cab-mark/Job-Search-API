@@ -272,12 +272,18 @@ def opensearch_hit_to_job_result_item(hit: Dict[str, Any]) -> JobResultItem:
         closing_date = date(2099, 12, 31)
     
     # Handle profession - convert to enum
+    # Note: Profession is required, so we need to skip jobs without valid profession
     profession_str = source.get("profession", "")
+    if not profession_str:
+        # Skip jobs without profession - they're invalid per the schema
+        logger.warning(f"Job {job_id} missing required profession field, skipping")
+        raise ValueError("Missing required profession field")
     try:
         profession = Profession(profession_str)
     except ValueError:
-        # Default to first profession if not found
-        profession = Profession.actuary
+        # Invalid profession - skip this job as profession is required
+        logger.warning(f"Job {job_id} has invalid profession '{profession_str}', skipping")
+        raise ValueError(f"Invalid profession: {profession_str}")
     
     # Handle approach - convert to enum
     approach_str = source.get("approach", "Internal")
