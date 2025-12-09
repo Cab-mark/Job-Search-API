@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
+# Constants for data mapping and validation
+DEFAULT_CLOSING_DATE = date(2099, 12, 31)  # Far-future date for jobs without closing date
+VALID_WORKING_PATTERNS = {wp.value for wp in WorkingPattern}
+VALID_WORK_LOCATIONS = {wl.value for wl in WorkLocation}
+
 
 def build_search_query(
     q: Optional[str] = None,
@@ -222,7 +227,7 @@ def opensearch_hit_to_job_result_item(hit: Dict[str, Any]) -> JobResultItem:
     if isinstance(working_pattern_data, str):
         working_pattern_data = [working_pattern_data]
     working_pattern = [
-        WorkingPattern(wp) if wp in ["Full-time", "Part-time"] else WorkingPattern.full_time
+        WorkingPattern(wp) if wp in VALID_WORKING_PATTERNS else WorkingPattern.full_time
         for wp in (working_pattern_data if working_pattern_data else ["Full-time"])
     ]
     
@@ -252,7 +257,7 @@ def opensearch_hit_to_job_result_item(hit: Dict[str, Any]) -> JobResultItem:
     if isinstance(work_location_data, str):
         work_location_data = [work_location_data]
     work_location = [
-        WorkLocation(wl) if wl in ["Home based", "Office based"] else WorkLocation.office_based
+        WorkLocation(wl) if wl in VALID_WORK_LOCATIONS else WorkLocation.office_based
         for wl in (work_location_data if work_location_data else ["Office based"])
     ]
     
@@ -268,20 +273,20 @@ def opensearch_hit_to_job_result_item(hit: Dict[str, Any]) -> JobResultItem:
     try:
         closing_date = date.fromisoformat(closing_date_str)
     except (ValueError, TypeError):
-        # Fallback: try to parse common date formats or use far future
-        closing_date = date(2099, 12, 31)
+        # Fallback: use far future date for jobs without valid closing date
+        closing_date = DEFAULT_CLOSING_DATE
     
     # Handle profession - convert to enum
-    # Note: Profession is required, so we need to skip jobs without valid profession
+    # Note: Profession is required per the schema
     profession_str = source.get("profession", "")
     if not profession_str:
-        # Skip jobs without profession - they're invalid per the schema
+        # Missing required field - skip this job
         logger.warning(f"Job {job_id} missing required profession field, skipping")
         raise ValueError("Missing required profession field")
     try:
         profession = Profession(profession_str)
     except ValueError:
-        # Invalid profession - skip this job as profession is required
+        # Invalid profession value - skip this job as profession is required
         logger.warning(f"Job {job_id} has invalid profession '{profession_str}', skipping")
         raise ValueError(f"Invalid profession: {profession_str}")
     
