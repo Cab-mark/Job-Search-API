@@ -247,4 +247,4 @@ This repository is designed to be deployed to AWS. While cloud infrastructure is
 
 ## License
 
-[Add your license here]
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
