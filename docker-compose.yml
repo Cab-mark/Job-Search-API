@@ -13,7 +13,7 @@
 services:
   # OpenSearch - Search Engine
   opensearch:
-    image: opensearchproject/opensearch:2.17.1
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-2.17.1}
     container_name: job-search-opensearch
     environment:
       - cluster.name=job-search-cluster
@@ -33,7 +33,7 @@ services:
     volumes:
       - opensearch-data:/usr/share/opensearch/data
     ports:
-      - "9200:9200"
+      - "${OPENSEARCH_PORT:-9200}:9200"
       - "9600:9600"
     networks:
       - job-search-network
@@ -46,24 +46,18 @@ services:
 
   # OpenSearch Dashboards - UI
   opensearch-dashboards:
-    image: opensearchproject/opensearch-dashboards:2.17.1
+    image: opensearchproject/opensearch-dashboards:${OPENSEARCH_VERSION:-2.17.1}
     container_name: job-search-opensearch-dashboards
     environment:
-      - 'OPENSEARCH_HOSTS=["http://opensearch:9200"]'
+      - "OPENSEARCH_HOSTS=[\"http://${OPENSEARCH_HOST:-opensearch}:${OPENSEARCH_PORT:-9200}\"]"
       - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
     ports:
-      - "5601:5601"
+      - "${OPENSEARCH_DASHBOARDS_PORT:-5601}:5601"
     networks:
       - job-search-network
     depends_on:
       opensearch:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:5601/api/status | grep -q '\"state\":\"green\"\\|\"state\":\"yellow\"'"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
 
   # Job Search API - FastAPI Application
   job-search-api:
@@ -72,8 +66,8 @@ services:
       dockerfile: Dockerfile
     container_name: job-search-api
     environment:
-      - OPENSEARCH_HOST=opensearch
-      - OPENSEARCH_PORT=9200
+      - OPENSEARCH_HOST=${OPENSEARCH_HOST:-opensearch}
+      - OPENSEARCH_PORT=${OPENSEARCH_PORT:-9200}
       - OPENSEARCH_INDEX=jobs
     ports:
       - "8000:8000"
