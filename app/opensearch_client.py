@@ -161,7 +161,7 @@ def get_jobs_index_mapping() -> Dict[str, Any]:
                     }
                 },
                 # Closing date - text (stored as string like '20 December 2025')
-                "closingDate": {
+                "dateClosing": {
                     "type": "text",
                     "fields": {
                         "keyword": {

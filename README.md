@@ -191,7 +191,7 @@ Response:
       },
       "workLocation": ["Office based"],
       "grade": "Grade 7",
-      "closingDate": "2025-12-20",
+      "dateClosing": "2025-12-20",
       "profession": "Policy",
       "approach": "Internal"
     }

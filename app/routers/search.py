@@ -292,7 +292,7 @@ def opensearch_hit_to_job_result_item(hit: Dict[str, Any]) -> JobResultItem:
         grade = grade_str or "Unknown"
     
     # Handle closing date - convert to date
-    closing_date_str = source.get("closingDate", "")
+    closing_date_str = source.get("dateClosing", "")
     try:
         closing_date = date.fromisoformat(closing_date_str)
     except (ValueError, TypeError):

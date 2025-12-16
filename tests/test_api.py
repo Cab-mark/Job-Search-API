@@ -86,7 +86,7 @@ class TestSearchEndpoints:
                             },
                             "workLocation": ["Office based"],
                             "grade": "Grade 7",
-                            "closingDate": "2025-12-31",
+                            "dateClosing": "2025-12-31",
                             "profession": "Digital and Data",
                             "approach": "Internal"
                         }
