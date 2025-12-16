@@ -49,8 +49,9 @@ services:
     image: opensearchproject/opensearch-dashboards:${OPENSEARCH_VERSION:-2.17.1}
     container_name: job-search-opensearch-dashboards
     environment:
-      - "OPENSEARCH_HOSTS=[\"http://${OPENSEARCH_HOST:-opensearch}:${OPENSEARCH_PORT:-9200}\"]"
       - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    volumes:
+      - ./docker/opensearch-dashboards/opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml
     ports:
       - "${OPENSEARCH_DASHBOARDS_PORT:-5601}:5601"
     networks:
